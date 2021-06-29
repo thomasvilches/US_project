@@ -42,6 +42,8 @@ Base.@kwdef mutable struct Human
     index_day::Int64 = 1
     relaxed::Bool = false
     recovered::Bool = false
+    vaccine::Symbol = :none
+    vaccine_n::Int16 = 0
 end
 
 ## default system parameters
@@ -90,15 +92,22 @@ end
     kid_comp::Float64 = 0.8
     #comor_comp::Float64 = 0.7 #prop comorbidade tomam
 
-    vac_period::Int64 = 28 #period between two doses (minimum)
+    vac_period::Array{Int64,1} = [21;28]
     n_comor_comp::Float64 = 1.0
     min_age_vac::Int64 = 18
     
-    days_to_protection::Array{Array{Int64,1},1} = [[14],[0;14]]
-    vac_efficacy_inf::Array{Array{Float64,1},1} = [[0.46],[0.6;0.93]]  #### 50:5:80
-    vac_efficacy_symp::Array{Array{Float64,1},1} = [[0.921],[0.921;0.941]]  #### 50:5:80
-    vac_efficacy_sev::Array{Array{Float64,1},1} = [[0.802],[0.941;1.0]]  #### 50:5:80
-   
+    
+    #=--------- Vaccine efficacy of Pfizer ----------------------=#
+    days_to_protection_p::Array{Array{Int64,1},1} = [[14],[0;7]]
+    vac_efficacy_inf_p::Array{Array{Float64,1},1} = [[0.46],[0.6;0.92]] #### 50:5:80
+    vac_efficacy_symp_p::Array{Array{Float64,1},1} = [[0.57],[0.66;0.94]]  #### 50:5:80
+    vac_efficacy_sev_p::Array{Array{Float64,1},1} = [[0.62],[0.80;0.92]]  #### 50:5:80
+    
+    #=--------- Vaccine efficacy of Moderna ----------------------=#
+    days_to_protection_m::Array{Array{Int64,1},1} = [[14],[0;14]]
+    vac_efficacy_inf_m::Array{Array{Float64,1},1} = [[0.61],[0.61;0.935]] #### 50:5:80
+    vac_efficacy_symp_m::Array{Array{Float64,1},1} =[[0.921],[0.921;0.941]] #### 50:5:80
+    vac_efficacy_sev_m::Array{Array{Float64,1},1} = [[0.921],[0.921;1.0]]  #### 50:5:80
 
     vaccinating::Bool = false #vaccinating?
     single_dose::Bool = false #unique dose
@@ -106,6 +115,8 @@ end
     fixed_cov::Float64 = 0.4 #coverage of population
     day_insert_kids::Int64 = 255
 
+
+    pfizer_proportion::Float64 = 1.0
     red_risk_perc::Float64 = 1.0 #relative isolation in vaccinated individuals
     reduction_protection::Float64 = 0.0 #reduction in protection against infection
     #fd_1::Array{Int64,1} = [0;18;60;110;150;408;350;220;194;202;219;302;207;330;536;600;660;750;800] #daily vaccination rate
@@ -153,6 +164,8 @@ end
     status_relax::Int16 = 2
     relax_after::Int64 = 1
 
+    priority::Bool = false
+
     time_back_to_normal::Int64 = 999 ###relaxing time of measures for non-vaccinated
     ### after calibration, how much do we want to increase the contact rate... in this case, to reach 70%
     ### 0.5*0.95 = 0.475, so we want to multiply this by 1.473684211
@@ -176,7 +189,7 @@ Base.show(io::IO, ::MIME"text/plain", z::Human) = dump(z)
 const humans = Array{Human}(undef, 0) 
 const p = ModelParameters()  ## setup default parameters
 const agebraks = @SVector [0:4, 5:19, 20:49, 50:64, 65:99]
-const agebraks_vac = @SVector [0:12, 12:15, 16:17, 18:24, 25:39, 40:49, 50:64, 65:74, 75:99]
+const agebraks_vac = @SVector [12:15, 16:17, 18:24, 25:39, 40:49, 50:64, 65:74, 75:99]
 const BETAS = Array{Float64, 1}(undef, 0) ## to hold betas (whether fixed or seasonal), array will get resized
 const ct_data = ct_data_collect()
 export ModelParameters, HEALTH, Human, humans, BETAS
@@ -286,27 +299,13 @@ function main(ip::ModelParameters,sim::Int64)
     # start the time loop
     time_vac::Int64 = 1
     if p.vaccinating
-        vac_ind2 = vac_selection(sim)
-        vac_ind = Array{Int64,1}(undef,length(vac_ind2))
-        for i = 1:length(vac_ind2)
-            vac_ind[i] = vac_ind2[i]
-        end
-        v1,v2 = vac_index_new(length(vac_ind))
+        vac_ind = vac_selection(sim)
         
-        aux = v1[p.day_insert_kids+2]
-
-        if aux < 0
-            #aux = findfirst(y-> y<0, v1)-1
-            aux = maximum(v1)
-        end
-
-        rng = MersenneTwister(485*sim)
-        vac_ind = [vac_ind[1:aux];shuffle(rng,vac_ind[aux+1:end])]
-
     else
         time_vac = 9999 #this guarantees that no one will be vaccinated
     end
-        
+    time_vac::Int64 = 1
+    time_pos::Int64 = 0
     for st = 1:p.modeltime
         if p.ins_sec_strain && st == p.time_sec_strain ##insert second strain
             insert_infected(PRE, p.initialinf2, 4, 2)[1]
@@ -323,8 +322,7 @@ function main(ip::ModelParameters,sim::Int64)
             count_change += 1
         end
         # start of day
-        #println("$st")
-
+       
         if st == p.relaxing_time ### time that people vaccinated people is allowed to go back to normal
             setfield!(p, :relaxed, true)
         elseif st == p.time_back_to_normal ##time that non-vaccinated people is allowed to go back to normal
@@ -332,17 +330,12 @@ function main(ip::ModelParameters,sim::Int64)
             #setfield!(p, :contact_change_rate, 1.0)
         end
 
-        if time_vac <= (length(v1)-1) ## daily vaccination
-            #if st%7 > 0 #we are vaccinating everyday
-                vac_ind2 = vac_time!(vac_ind,time_vac,v1,v2)
-                #vac_ind = [vac_ind vac_ind2]
-                resize!(vac_ind, length(vac_ind2))
-                for i = 1:length(vac_ind2)
-                    vac_ind[i] = vac_ind2[i]
-                end
-                time_vac += 1
-            #end
+        if time_pos < length(p.days_change_vac_rate) && time_vac == p.days_change_vac_rate[time_pos+1]
+            time_pos += 1
         end
+        time_vac += 1
+        p.vaccinating && vac_time!(vac_ind,time_pos+1)
+       
        
         _get_model_state(st, hmatrix) ## this datacollection needs to be at the start of the for loop
         dyntrans(st, grps,sim)
@@ -366,9 +359,7 @@ export main
 
 function vac_selection(sim::Int64)
     
-    rng = MersenneTwister(123*sim)
 
-    
     if p.priority
         aux_1 = map(k-> findall(y-> y.age in k && y.comorbidity == 1,humans),agebraks_vac)
         aux_2 = map(k-> findall(y-> y.age in k && y.comorbidity == 0,humans),agebraks_vac)
@@ -382,214 +373,189 @@ function vac_selection(sim::Int64)
 
 end
 
-function vac_index_new(l::Int64)
 
-    v1 = Array{Int64,1}(undef,p.popsize);
-    v2 = Array{Int64,1}(undef,p.popsize);
-    #n::Int64 = p.fd_2+p.sd1
-    v1_aux::Bool = false
-    v2_aux::Bool = false
-    kk::Int64 = 2
-
-    
-    for i = 1:p.popsize
-        v1[i] = -1
-        v2[i] = -1
-    end
-    jj::Int64 = 1 ###which vac rate we are looking at
-    v1[1] = 0
-    v2[1] = 0
-    eligible::Int64 = 0
-    extra_d::Int64 = 0
-    for i = 2:(p.sec_dose_delay+1)
-        #aux = map(x-> v1[x]-v1[x-1],1:(i-1))
-        v1[i] = v1[i-1]+p.fd_1[jj]+extra_d
-        v2[i] = 0
-        if i > (p.vac_period+1)
-            eligible = eligible+(v1[i-p.vac_period]-v1[i-p.vac_period-1])
-        end
-        if !(jj > length(p.days_change_vac_rate)) && i-1 == p.days_change_vac_rate[jj]
-            jj += 1
-        end
-        if i-1 == p.extra_dose_day
-            extra_d = p.extra_dose_n
-        end
-    end
-
-    kk = p.sec_dose_delay+2
-    
-
-    #eligible::Int64 = 0
-    last_v2::Int64 = 0
-    while !v1_aux || !v2_aux
-        
-        n = p.sd1[jj]+p.fd_2+extra_d
-        eligible = eligible+(v1[kk-p.vac_period]-v1[kk-p.vac_period-1])
-        n1_a = v1_aux ? n : p.sd1[jj]+extra_d
-        v2_1 = min(n1_a,eligible-last_v2)
-
-        v2[kk] = last_v2+v2_1
-        last_v2 = v2[kk]
-        n_aux = n-v2_1
-        
-        v1[kk] = v1[kk-1]+n_aux
-
-        if !(jj > length(p.days_change_vac_rate)) && kk-1 == p.days_change_vac_rate[jj] 
-            jj += 1
-        end
-        if kk-1 == p.extra_dose_day
-            extra_d = p.extra_dose_n
-        end
-        
-        if v1[kk] >= l
-            v1[kk] = l
-            v1_aux = true
-        end
-
-        if v2[kk] >= l
-            v2[kk] = l
-            v2_aux = true
-        end
-        kk += 1
-
-    end
-
-    a = findfirst(x-> x == l, v1)
-
-    for i = (a+1):length(v1)
-        v1[i] = -1
-    end
-    a = findfirst(x-> x == -1, v2)
-
-
-    return v1[1:(a-1)],v2[1:(a-1)]
-end 
-
-function vac_time!(vac_ind::Array{Int64,1},t::Int64,n_1_dose::Array{Int64,1},n_2_dose::Array{Int64,1})
-    
+function vac_time!(vac_ind::Array{Int64,1},time_pos::Int64)
+    aux_states = (MILD, MISO, INF, IISO, HOS, ICU, DED,MILD2, MISO2, INF2, IISO2, HOS2, ICU2, DED2,MILD3, MISO3, INF3, IISO3, HOS3, ICU3, DED3)
     ##first dose
-    for i = (n_1_dose[t]+1):1:n_1_dose[t+1]
-        x = humans[vac_ind[i]]
-        if x.vac_status == 0
-            if x.health in (MILD, MISO, INF, IISO, HOS, ICU, DED,MILD2, MISO2, INF2, IISO2, HOS2, ICU2, DED2,MILD3, MISO3, INF3, IISO3, HOS3, ICU3, DED3)
-                pos = findall(k-> !(humans[vac_ind[k]].health in (MILD, MISO, INF, IISO, HOS, ICU, DED,MILD2, MISO2, INF2, IISO2, HOS2, ICU2, DED2,MILD3, MISO3, INF3, IISO3, HOS3, ICU3, DED3)) && k>n_1_dose[t+1],1:length(vac_ind))
-                if length(pos) > 0
-                    r = rand(pos)
-                    aux = vac_ind[i]
-                    vac_ind[i] = vac_ind[r]
-                    vac_ind[r] = aux
-                    x = humans[vac_ind[i]]
-                    x.days_vac = 0
-                    x.vac_status = 1
-                    #x.relaxed = p.relaxed && x.vac_status == p.status_relax ? true : false
-                end
-            else
+    rng = MersenneTwister(123*sim)
+    ### lets create distribute the number of doses per age group
+    vac_p_age = Int(map(x->round(x),p.fd_1[time_pos]*p.prop_vac_age[time_pos])) ##these parameters will be added after change data
+
+    remaining_doses::Int64 = 0
+
+    for i in 1:length(vac_ind)
+        pos = findall(y-> humans[y].vac_status == 1 && humans[y].days_vac >= p.vac_period[humans[y].vaccine_n] && !(humans[y].health in aux_states),vac_ind[i])
+        
+        l1 = min(vac_p_age[i],length(pos))
+        for j = 1:l1
+            x = humans[vac_ind[i][pos[j]]]
+            x.days_vac = 0
+            x.vac_status = 2
+            x.index_day = 1
+        end
+
+        pos = findall(y-> humans[y].vac_status == 0 && !(humans[y].health in aux_states),vac_ind[i])
+        
+        l2 = min(vac_p_age[i]-l1,length(pos))
+
+        remaining_doses += vac_p_age[i]-l1-l2 
+
+        for j = 1:l2
+            x = humans[vac_ind[i][pos[j]]]
+            x.days_vac = 0
+            x.vac_status = 1
+            x.index_day = 1
+    
+            x.vaccine = rand() <= p.pfizer_proportion ? :pfizer : :moderna
+            x.vaccine_n = x.vaccine == :pfizer ? 1 : 2
+        end
+
+    end
+
+    ###remaining_doses are given to any individual within the groups that are vaccinated on that day
+    if remaining_doses > 0
+
+        pos = map(k->findall(y-> humans[y].vac_status == 1 && humans[y].days_vac >= p.vac_period[humans[y].vaccine_n] && !(humans[y].health in aux_states),vac_ind[k]),1:length(vac_ind))
+        pos2 = map(k->findall(y-> humans[y].vac_status == 0 && !(humans[y].health in aux_states),vac_ind[k]),1:length(vac_ind))
+        
+        aux = findall(x-> p.prop_vac_age[x] > 0, 1:length(n))
+        position = map(k-> vac_ind[k][pos[k]],aux)
+        position2 = map(k-> vac_ind[k][pos2[k]],aux)
+
+        r = vcat(position...,position2...)
+        m = min(remaining_doses,length(r))
+
+        rr = sample(rng,rr,m,replace=false)
+        
+        for i in rr
+            x = humans[r]
+            if x.vac_status == 0
                 x.days_vac = 0
                 x.vac_status = 1
-                #x.relaxed = p.relaxed && x.vac_status == p.status_relax ? true : false
-            end
-            
-        end
-    end
-
-    for i = (n_2_dose[t]+1):1:n_2_dose[t+1]
-        x = humans[vac_ind[i]]
-
-        if x.health in (MILD, MISO, INF, IISO, HOS, ICU, DED,MILD2, MISO2, INF2, IISO2, HOS2, ICU2, DED2,MILD3, MISO3, INF3, IISO3, HOS3, ICU3, DED3)
-            
-            if t != (length(n_2_dose)-1)
-                vac_ind = [vac_ind; x.idx]
-                n_2_dose[end] += 1
-            end
-            
-        else
-            if !x.hcw
-                 drop_out_rate = [p.drop_rate;p.drop_rate;p.drop_rate] 
-               #= drop_out_rate = [0;0;0] =#
-                ages_drop = [17;64;999]
-                age_ind = findfirst(k->k>=x.age,ages_drop)
-                if rand() < (1-drop_out_rate[age_ind])
-                    x = humans[vac_ind[i]]
-                    #red_com = p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-                    #x.vac_ef = ((1-red_com)^x.comorbidity)*(p.vac_efficacy/2.0)+(p.vac_efficacy/2.0)
-                    x.days_vac = 0
-                    x.vac_status = 2
-                    x.index_day = 1
-                   # x.relaxed = p.relaxed && x.vac_status == p.status_relax ? true : false
-                end
-            else
-                #red_com = p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-                #x.vac_ef = ((1-red_com)^x.comorbidity)*(p.vac_efficacy/2.0)+(p.vac_efficacy/2.0)
+                x.index_day = 1
+                x.vaccine = rand() <= p.pfizer_proportion ? :pfizer : :moderna
+                x.vaccine_n = x.vaccine == :pfizer ? 1 : 2
+            elseif x.vac_status == 1
                 x.days_vac = 0
                 x.vac_status = 2
                 x.index_day = 1
-               # x.relaxed = p.relaxed && x.vac_status == p.status_relax ? true : false
-               
+            else
+                error("error in humans vac status - vac time")
             end
         end
     end
-    return vac_ind
+
 end
 
 function vac_update(x::Human)
-    comm::Int64 = 0
-    if x.age >= 65
-        comm = 1
-    else
-        comm = x.comorbidity
-    end
-
 
     if x.vac_status == 1
-        #x.index_day == 2 && error("saiu com indice 2")
-        if x.days_vac == p.days_to_protection[x.vac_status][x.index_day]#14
-            red_com = x.vac_red #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-            x.vac_ef_inf = p.vac_efficacy_inf[x.vac_status][1]
-            x.vac_ef_symp = p.vac_efficacy_symp[x.vac_status][1]
-            x.vac_ef_sev = p.vac_efficacy_sev[x.vac_status][1]
-            x.index_day = min(length(p.days_to_protection[x.vac_status]),x.index_day+1)
-        elseif x.days_vac == p.days_to_protection[x.vac_status][x.index_day]#14
-            red_com = x.vac_red #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-            x.vac_ef_inf = (p.vac_efficacy_inf[x.vac_status][x.index_day]-p.vac_efficacy_inf[x.vac_status][x.index_day-1])+x.vac_ef_inf
-            x.vac_ef_symp = (p.vac_efficacy_symp[x.vac_status][x.index_day]-p.vac_efficacy_symp[x.vac_status][x.index_day-1])+x.vac_ef_symp
-            x.vac_ef_sev = (p.vac_efficacy_sev[x.vac_status][x.index_day]-p.vac_efficacy_sev[x.vac_status][x.index_day-1])+x.vac_ef_sev
-            x.index_day = min(length(p.days_to_protection[x.vac_status]),x.index_day+1)
+        if x.vaccine == :pfizer
+            if x.days_vac == p.days_to_protection_p[x.vac_status][x.index_day]#14
+            
+                x.vac_ef_inf = p.vac_efficacy_inf_p[x.vac_status][1]
+                x.vac_ef_symp = p.vac_efficacy_symp_p[x.vac_status][1]
+                x.vac_ef_sev = p.vac_efficacy_sev_p[x.vac_status][1]
+    
+                x.index_day = min(length(p.days_to_protection_p[x.vac_status]),x.index_day+1)
+    
+            elseif x.days_vac == p.days_to_protection_p[x.vac_status][x.index_day]#14
+    
+                x.vac_ef_inf = p.vac_efficacy_inf_p[x.vac_status][x.index_day]
+                x.vac_ef_symp = p.vac_efficacy_symp_p[x.vac_status][x.index_day]
+                x.vac_ef_sev = p.vac_efficacy_sev_p[x.vac_status][x.index_day]
+    
+                x.index_day = min(length(p.days_to_protection_p[x.vac_status]),x.index_day+1)
+            end
+        elseif x.vaccine == :moderna
+            if x.days_vac == p.days_to_protection_m[x.vac_status][x.index_day]#14
+            
+                x.vac_ef_inf = p.vac_efficacy_inf_m[x.vac_status][1]
+                x.vac_ef_symp = p.vac_efficacy_symp_m[x.vac_status][1]
+                x.vac_ef_sev = p.vac_efficacy_sev_m[x.vac_status][1]
+    
+                x.index_day = min(length(p.days_to_protection_m[x.vac_status]),x.index_day+1)
+    
+            elseif x.days_vac == p.days_to_protection_m[x.vac_status][x.index_day]#14
+    
+                x.vac_ef_inf = p.vac_efficacy_inf_m[x.vac_status][x.index_day]
+                x.vac_ef_symp = p.vac_efficacy_symp_m[x.vac_status][x.index_day]
+                x.vac_ef_sev = p.vac_efficacy_sev_m[x.vac_status][x.index_day]
+    
+                x.index_day = min(length(p.days_to_protection_m[x.vac_status]),x.index_day+1)
+            end
         end
+        
         if !x.relaxed
             x.relaxed = p.relaxed &&  x.vac_status >= p.status_relax && x.days_vac >= p.relax_after ? true : false
         end
+        
         x.days_vac += 1
 
     elseif x.vac_status == 2
-        if x.days_vac == p.days_to_protection[x.vac_status][1]#0
+        if x.vaccine == :pfizer
+            if x.days_vac == p.days_to_protection_p[x.vac_status][1]#0
             
-            aux1 = ((1- x.vac_red)^comm)*p.vac_efficacy_inf[x.vac_status][1] #0.95
-            aux2 = ((1- x.vac_red)^comm)*p.vac_efficacy_symp[x.vac_status][1] #0.95
-            aux3 = ((1- x.vac_red)^comm)*p.vac_efficacy_sev[x.vac_status][1] #0.95
-        
-           #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-            x.vac_ef_inf = aux1
-            x.vac_ef_symp = aux2
-            x.vac_ef_sev = aux3
-
-            x.index_day = min(length(p.days_to_protection[x.vac_status]),x.index_day+1)
-
-        elseif x.days_vac == p.days_to_protection[x.vac_status][x.index_day]#7
-           
-            aux1 = ((1- x.vac_red)^comm)*p.vac_efficacy_inf[x.vac_status][x.index_day] #0.95
-            aux2 = ((1- x.vac_red)^comm)*p.vac_efficacy_symp[x.vac_status][x.index_day] #0.95
-            aux3 = ((1- x.vac_red)^comm)*p.vac_efficacy_sev[x.vac_status][x.index_day] #0.95
-        
-           #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
-            x.vac_ef_inf = aux1
-            x.vac_ef_symp = aux2
-            x.vac_ef_sev = aux3
-
-            x.index_day = min(length(p.days_to_protection[x.vac_status]),x.index_day+1)
+                aux1 = p.vac_efficacy_inf_p[x.vac_status][1] #0.95
+                aux2 = p.vac_efficacy_symp_p[x.vac_status][1] #0.95
+                aux3 = p.vac_efficacy_sev_p[x.vac_status][1] #0.95
+            
+               #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
+                x.vac_ef_inf = aux1
+                x.vac_ef_symp = aux2
+                x.vac_ef_sev = aux3
+    
+                x.index_day = min(length(p.days_to_protection_p[x.vac_status]),x.index_day+1)
+               
+            elseif x.days_vac == p.days_to_protection_p[x.vac_status][x.index_day]#7
+               
+                aux1 = p.vac_efficacy_inf_p[x.vac_status][x.index_day] 
+                aux2 = p.vac_efficacy_symp_p[x.vac_status][x.index_day] 
+                aux3 = p.vac_efficacy_sev_p[x.vac_status][x.index_day] 
+            
+               #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
+                x.vac_ef_inf = aux1
+                x.vac_ef_symp = aux2
+                x.vac_ef_sev = aux3
+    
+                x.index_day = min(length(p.days_to_protection_p[x.vac_status]),x.index_day+1)
+            end
+        elseif x.vaccine == :moderna
+            if x.days_vac == p.days_to_protection_m[x.vac_status][1]#0
+            
+                aux1 = p.vac_efficacy_inf_m[x.vac_status][1] #0.95
+                aux2 = p.vac_efficacy_symp_m[x.vac_status][1] #0.95
+                aux3 = p.vac_efficacy_sev_m[x.vac_status][1] #0.95
+            
+               #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
+                x.vac_ef_inf = aux1
+                x.vac_ef_symp = aux2
+                x.vac_ef_sev = aux3
+    
+                x.index_day = min(length(p.days_to_protection_m[x.vac_status]),x.index_day+1)
+               
+            elseif x.days_vac == p.days_to_protection_m[x.vac_status][x.index_day]#7
+               
+                aux1 = p.vac_efficacy_inf_m[x.vac_status][x.index_day] 
+                aux2 = p.vac_efficacy_symp_m[x.vac_status][x.index_day] 
+                aux3 = p.vac_efficacy_sev_m[x.vac_status][x.index_day] 
+            
+               #p.vac_com_dec_min+rand()*(p.vac_com_dec_max-p.vac_com_dec_min)
+                x.vac_ef_inf = aux1
+                x.vac_ef_symp = aux2
+                x.vac_ef_sev = aux3
+    
+                x.index_day = min(length(p.days_to_protection_m[x.vac_status]),x.index_day+1)
+            end
+        else
+            error("no vaccine")
         end
+
+        
         if !x.relaxed
             x.relaxed = p.relaxed &&  x.vac_status >= p.status_relax && x.days_vac >= p.relax_after ? true : false
         end
+       
         x.days_vac += 1
     end
    
