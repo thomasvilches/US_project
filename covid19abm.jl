@@ -176,6 +176,7 @@ Base.show(io::IO, ::MIME"text/plain", z::Human) = dump(z)
 const humans = Array{Human}(undef, 0) 
 const p = ModelParameters()  ## setup default parameters
 const agebraks = @SVector [0:4, 5:19, 20:49, 50:64, 65:99]
+const agebraks_vac = @SVector [0:12, 12:15, 16:17, 18:24, 25:39, 40:49, 50:64, 65:74, 75:99]
 const BETAS = Array{Float64, 1}(undef, 0) ## to hold betas (whether fixed or seasonal), array will get resized
 const ct_data = ct_data_collect()
 export ModelParameters, HEALTH, Human, humans, BETAS
@@ -367,81 +368,18 @@ function vac_selection(sim::Int64)
     
     rng = MersenneTwister(123*sim)
 
-    pos = findall(x-> humans[x].age>=20 && humans[x].age<65,1:length(humans))
-    pos_hcw = sample(rng,pos,Int(round(p.hcw_vac_comp*p.hcw_prop*p.popsize)),replace = false)
     
-    for i in pos_hcw
-        humans[i].hcw = true
+    if p.priority
+        aux_1 = map(k-> findall(y-> y.age in k && y.comorbidity == 1,humans),agebraks_vac)
+        aux_2 = map(k-> findall(y-> y.age in k && y.comorbidity == 0,humans),agebraks_vac)
+
+        v = map(x-> [aux_1[x];aux_2[x]],1:length(aux_1))
+    else
+        v = map(k-> findall(y-> y.age in k,humans),agebraks_vac)
+
     end
+    
 
-    #pos_com = findall(x->humans[x].comorbidity == 1 && !(x in pos_hcw) && humans[x].age<65 && humans[x].age>=16, 1:length(humans))
-    #pos_com = sample(pos_com,Int(round(p.comor_comp*length(pos_com))),replace=false)
-
-
-    pos_eld = findall(x-> humans[x].age>=75, 1:length(humans))
-    pos_eld = sample(rng,pos_eld,Int(round(p.eld_comp*length(pos_eld))),replace=false)
-
-    pos_old = findall(x-> humans[x].age>=65 && humans[x].age<75 && humans[x].comorbidity == 0 && !humans[x].hcw, 1:length(humans))
-    pos_old = sample(rng,pos_old,Int(round(p.old_adults*length(pos_old))),replace=false)
-
-    pos_old_c = findall(x-> humans[x].age>=65 && humans[x].age<75 && humans[x].comorbidity == 1  && !humans[x].hcw, 1:length(humans))
-    pos_old_c = sample(rng,pos_old_c,Int(round(p.old_adults*length(pos_old_c))),replace=false)
-
-    pos_young_c = findall(x-> humans[x].age>=p.min_age_vac && humans[x].age<65 && humans[x].comorbidity == 1  && !humans[x].hcw, 1:length(humans))
-    pos_young_c = sample(rng,pos_young_c,Int(round(p.young_adults*length(pos_young_c))),replace=false)
-
-    pos_young_1 = findall(x-> humans[x].age>=40 && humans[x].age<65 && humans[x].comorbidity == 0  && !humans[x].hcw, 1:length(humans))
-    pos_young_1 = sample(rng,pos_young_1,Int(round(p.young_adults*length(pos_young_1))),replace=false)
-
-    pos_young_2 = findall(x-> humans[x].age>=p.min_age_vac && humans[x].age<40 && humans[x].comorbidity == 0  && !humans[x].hcw, 1:length(humans))
-    pos_young_2 = sample(rng,pos_young_2,Int(round(p.young_adults*length(pos_young_2))),replace=false)
-
-    pos_kid = findall(x-> humans[x].age>=12 && humans[x].age<p.min_age_vac, 1:length(humans))
-    pos_kid = sample(rng,pos_kid,Int(round(p.kid_comp*length(pos_kid))),replace=false)
-
-    #pos_n_com = findall(x->humans[x].comorbidity == 0 && !(x in pos_hcw) && humans[x].age<65 && humans[x].age>=p.min_age_vac, 1:length(humans))
-    #pos_n_com = sample(rng,pos_n_com,Int(round(length(pos_n_com))),replace=false)
-    #pos_y = findall(x-> humans[x].age<18, 1:length(humans))
-    #pos_y = sample(pos_y,Int(round(p.young_comp*length(pos_y))),replace=false)
-
-    #pos1 = [pos_eld;shuffle(rng,[pos_old;pos_old_c;pos_young_c])]
-    #pos2 = shuffle([pos_n_com;pos_y])
-    #pos2 = [pos_old;pos_young;pos_kid]
-
-    #pos1 = shuffle(rng,[pos_hcw;pos_eld])
-    #pos_11 = pos1[1:Int(floor(length(pos1)/2))]
-    #pos_12 = pos1[Int(floor(length(pos1)/2)+1):end]
-
-    pos2 = shuffle(rng,[pos_eld;pos_old_c;pos_young_c])
-
-    ll = length([pos_young_1;pos_young_2])
-
-    wv1 = repeat([0.6],length(pos_young_1))
-    wv2 = repeat([0.4],length(pos_young_2))
-
-    wv = Weights([wv1;wv2])
-
-    pos3 = sample(rng,[pos_young_1;pos_young_2],wv,ll,replace = false)
-
-   # pos_21 = pos2[1:Int(floor(length(pos2)/2))]
-   # pos_22 = pos2[Int(floor(length(pos2)/2)+1):end]
-
-    #pos_o1 = pos_old[1:Int(floor(length(pos_old)/2))]
-    #pos_o2 = pos_old[Int(floor(length(pos_old)/2)+1):end]
-
-    #pos_y1 = pos_young[1:Int(floor(length(pos_young)/2))]
-    #pos_y2 = pos_young[Int(floor(length(pos_young)/2)+1):end]
-
-    #pos_y1 = pos_young[1:Int(floor(length(pos_young)/2))]
-    #pos_y2 = pos_young[Int(floor(length(pos_young)/2)+1):end]
-
-    #pos_k1 = pos_kid[1:Int(floor(length(pos_kid)/2))]
-    #pos_k2 = pos_kid[Int(floor(length(pos_kid)/2)+1):end]
-  
-    #v = [pos_11;shuffle(rng,[pos_12;pos_21]);shuffle(rng,[pos_22;pos_o1]);shuffle(rng,[pos_o2;pos_y1]);pos_y2;pos_kid]#shuffle(rng,[pos_y2;pos_k1]);pos_k2]
-    v = [pos_hcw;pos2;pos_old;pos3;pos_kid]#shuffle(rng,[pos_y2;pos_k1]);pos_k2]
-
-    return v
 end
 
 function vac_index_new(l::Int64)
