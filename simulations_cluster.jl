@@ -230,7 +230,7 @@ end
 
 
 
-function run_param_scen(b,h_i = 0,ic=1,fs=0.0,fm=0.0,strain2_trans=1.5,vac = "none",index = 0,v1=[0],v2=[0],tt=500,nsims=500)
+function run_param_scen_cal(b,h_i = 0,ic=1,fs=0.0,fm=0.0,strain2_trans=1.5,vac = "none",index = 0,v1=[0],v2=[0],tt=500,nsims=500)
         
     #b = bd[h_i]
     #ic = init_con[h_i]

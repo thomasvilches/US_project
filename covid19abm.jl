@@ -119,7 +119,7 @@ end
     extra_dose_day::Int64 = 999 #when extra doses are implemented
     days_Rt::Array{Int64,1} = [100;200;300] #days to get Rt
 
-    sec_strain_trans::Float64 = 1.5#1.5 #transmissibility of second strain
+    sec_strain_trans::Float64 = 1.55#1.5 #transmissibility of second strain
     ins_sec_strain::Bool = true #insert second strain?
     initialinf2::Int64 = 1 #number of initial infected of second strain
     time_sec_strain::Int64 = 92 #when will the second strain introduced
@@ -134,14 +134,14 @@ end
     min_eff = 0.02 #min efficacy when waning
     vac_effect::Int64 = 1 #vac effect, if 1 the difference between doses is added to first, if 2 the second dose is always vac_efficacy
     no_cap::Bool = true ## no maximum coverage
-    mortality_inc::Float64 = 1.3 #The mortality increase when infected by strain 2
+    mortality_inc::Float64 = 1.64 #The mortality increase when infected by strain 2
 
     time_change::Int64 = 999## used to calibrate the model
     how_long::Int64 = 1## used to calibrate the model
     how_much::Float64 = 0.0## used to calibrate the model
     rate_increase::Float64 = how_much/how_long## used to calibrate the model
-    time_change_contact::Array{Int64,1} = [1;map(y->47+y,0:(5));map(y->81+y,0:(5));map(y->93+y,0:4);map(y->111+y,0:8);map(y->127+y,0:11);map(y->180+y,0:(9))]
-    change_rate_values::Array{Float64,1} = [1;map(y->1.0+0.01*y,1:6);map(y->1.06-0.01*y,1:6);map(y->1.0-(0.03/5)*y,1:5);map(y->0.97+(0.084/9)*y,1:9);map(y->1.054-(0.20/12)*y,1:12);map(y->0.864+(0.045/10)*y,1:10)]
+    time_change_contact::Array{Int64,1} = [1;map(y->47+y,0:(5));map(y->81+y,0:(5));map(y->93+y,0:4);map(y->111+y,0:8);map(y->125+y,0:12)]
+    change_rate_values::Array{Float64,1} = [1;map(y->1.0+0.01*y,1:6);map(y->1.06-0.01*y,1:6);map(y->1.0-(0.03/5)*y,1:5);map(y->0.97+(0.084/9)*y,1:9);map(y->1.054-(0.21/13)*y,1:13)]
     contact_change_rate::Float64 = 1.0 #the rate that receives the value of change_rate_values
     contact_change_2::Float64 = 0.5 ##baseline number that multiplies the contact rate
 
@@ -991,7 +991,15 @@ end
 export move_to_asymp
 
 function move_to_pre(x::Human)
-    θ = (0.95, 0.9, 0.85, 0.6, 0.2)  # percentage of sick individuals going to mild infection stage
+ #[0:4, 5:19, 20:49, 50:64, 65:99]
+    if x.strain == 1 || x.strain == 3
+        θ = (0.95, 0.9, 0.85, 0.6, 0.2)  # percentage of sick individuals going to mild infection stage
+    elseif x.strain == 2
+        θ = (0.89, 0.78, 0.67, 0.48, 0.04) 
+    else
+        error("no strain in move to pre")
+    end
+
     x.health = x.swap
     x.tis = 0   # reset time in state 
     x.exp = x.dur[3] # get the presymptomatic period
@@ -1112,9 +1120,42 @@ function move_to_inf(x::Human)
     ## for swap, check if person will be hospitalized, selfiso, die, or recover
  
     # h = prob of hospital, c = prob of icu AFTER hospital    
-   
-    h = x.comorbidity == 1 ? 1.0 : 0.09 #0.376
-    c = x.comorbidity == 1 ? 0.33 : 0.25
+    
+    if x.strain == 1
+        h = x.comorbidity == 1 ? 1.0 : 0.108 #0.376
+        c = x.comorbidity == 1 ? 0.396 : 0.25
+    elseif x.strain == 2
+        if x.age <  20
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.07 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.07 : 0.25*1.07
+        elseif x.age >= 20 && x.age < 30
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.29 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.29 : 0.25*1.29
+        elseif  x.age >= 30 && x.age < 40
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.45 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.45 : 0.25*1.45
+        elseif  x.age >= 40 && x.age < 50
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.61 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.61 : 0.25*1.61
+        elseif  x.age >= 50 && x.age < 60
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.58 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.58 : 0.25*1.58
+        elseif  x.age >= 60 && x.age < 70
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.65 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.65 : 0.25*1.65
+        elseif  x.age >= 70 && x.age < 80
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.45 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.45 : 0.25*1.45
+        else
+            h = x.comorbidity == 1 ? 1.0 : 0.108*1.60 #0.376
+            c = x.comorbidity == 1 ? 0.396*1.60 : 0.25*1.60
+        end
+    elseif x.strain == 3
+        h = x.comorbidity == 1 ? 1.0 : 0.108 #0.376
+        c = x.comorbidity == 1 ? 0.396 : 0.25
+    else
+        error("no strain")
+    end
     
     groups = [0:34,35:54,55:69,70:84,85:100]
     gg = findfirst(y-> x.age in y,groups)
@@ -1256,8 +1297,8 @@ function move_to_hospicu(x::Human)
 
     elseif x.strain == 2
     
-        mh = [0.001, 0.001, 0.0025, 0.008, 0.02, 0.038, 0.15, 0.66]
-        mc = [0.002,0.002,0.0032, 0.01, 0.022, 0.04, 0.2, 0.70]
+        mh = [0.0016, 0.0016, 0.0025, 0.0107, 0.02, 0.038, 0.15, 0.66]
+        mc = [0.0033, 0.0033, 0.0036, 0.0131, 0.022, 0.04, 0.2, 0.70]
 
     else
       
